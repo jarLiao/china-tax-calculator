@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
 中国个人所得税计算器 - 2025年版
-支持月度工资、年终奖、专项附加扣除计算
+支持月度工资、年终奖、专项附加扣除、年度汇算清缴、多收入来源计算
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, List, Dict
 from enum import Enum
 
@@ -21,6 +21,17 @@ MONTHLY_TAX_BRACKETS = [
     (float('inf'), 0.45, 15160),
 ]
 
+# 综合所得年度税率表（汇算清缴用）
+ANNUAL_TAX_BRACKETS = [
+    (36000, 0.03, 0),
+    (144000, 0.10, 2520),
+    (300000, 0.20, 16920),
+    (420000, 0.25, 31920),
+    (660000, 0.30, 52920),
+    (960000, 0.35, 85920),
+    (float('inf'), 0.45, 181920),
+]
+
 # 年终奖税率表（按月均额）
 BONUS_TAX_BRACKETS = [
     (3000, 0.03, 0),
@@ -34,6 +45,7 @@ BONUS_TAX_BRACKETS = [
 
 # 起征点
 THRESHOLD = 5000
+ANNUAL_THRESHOLD = 60000
 
 
 # ==================== 数据类 ====================
@@ -87,6 +99,69 @@ class BonusTaxResult:
     quick_deduction: float           # 速算扣除数
     tax: float                       # 应纳税额
     net_bonus: float                 # 税后年终奖
+
+
+@dataclass
+class IncomeSource:
+    """多收入来源"""
+    salary: float = 0                # 工资薪金（年度总额）
+    labor_income: float = 0          # 劳务报酬（年度总额，扣除20%费用）
+    royalty_income: float = 0        # 稿酬（年度总额，扣除20%费用后减按70%）
+    franchise_income: float = 0      # 特许权使用费（年度总额，扣除20%费用）
+    
+    @property
+    def total_comprehensive_income(self) -> float:
+        """
+        计算综合所得总额
+        - 工资薪金：全额计入
+        - 劳务报酬：收入 × (1 - 20%)
+        - 稿酬：收入 × (1 - 20%) × 70%
+        - 特许权使用费：收入 × (1 - 20%)
+        """
+        return (
+            self.salary +
+            self.labor_income * 0.8 +
+            self.royalty_income * 0.8 * 0.7 +
+            self.franchise_income * 0.8
+        )
+
+
+@dataclass
+class AnnualSettlementResult:
+    """年度汇算清缴结果"""
+    comprehensive_income: float      # 综合所得总额
+    deductions: float                # 各项扣除总额
+    taxable_income: float            # 应纳税所得额
+    tax_rate: float                  # 税率
+    quick_deduction: float           # 速算扣除数
+    annual_tax: float                # 年度应纳税额
+    prepaid_tax: float               # 已预缴税额
+    settlement_amount: float         # 汇算金额（正数=应补缴，负数=应退税）
+    
+    @property
+    def is_refund(self) -> bool:
+        """是否退税"""
+        return self.settlement_amount < 0
+    
+    @property
+    def status_text(self) -> str:
+        """状态文本"""
+        if self.settlement_amount > 0:
+            return f"应补缴 ¥{self.settlement_amount:,.2f}"
+        elif self.settlement_amount < 0:
+            return f"应退税 ¥{abs(self.settlement_amount):,.2f}"
+        else:
+            return "无需补退"
+
+
+@dataclass
+class BonusOptimizationResult:
+    """年终奖优化结果"""
+    total_bonus: float               # 年终奖总额
+    optimal_split: List[Dict]        # 最优分配方案
+    total_tax: float                 # 最优方案总税额
+    worst_tax: float                 # 最差方案总税额
+    savings: float                   # 节省税额
 
 
 # ==================== 计算函数 ====================
@@ -362,6 +437,284 @@ def reverse_gross_from_net(
     return gross
 
 
+# ==================== 年度汇算清缴 ====================
+
+def calculate_annual_settlement(
+    income_sources: IncomeSource,
+    annual_social_insurance: float,
+    special_deduction: SpecialDeduction,
+    other_deductions: float = 0,
+    prepaid_tax: float = 0,
+) -> AnnualSettlementResult:
+    """
+    计算年度汇算清缴
+
+    Args:
+        income_sources: 多收入来源
+        annual_social_insurance: 年度五险一金（个人部分）
+        special_deduction: 专项附加扣除
+        other_deductions: 其他扣除（企业年金、商业健康保险等）
+        prepaid_tax: 已预缴税额
+
+    Returns:
+        AnnualSettlementResult: 汇算清缴结果
+    """
+    # 综合所得总额
+    comprehensive_income = income_sources.total_comprehensive_income
+    
+    # 各项扣除总额
+    total_deductions = (
+        annual_social_insurance +
+        special_deduction.total_monthly * 12 +
+        other_deductions +
+        ANNUAL_THRESHOLD
+    )
+    
+    # 应纳税所得额
+    taxable_income = max(0, comprehensive_income - total_deductions)
+    
+    # 获取税率
+    tax_rate, quick_ded = get_tax_info(taxable_income, ANNUAL_TAX_BRACKETS)
+    
+    # 年度应纳税额
+    annual_tax = taxable_income * tax_rate - quick_ded
+    
+    # 汇算金额（正数=应补缴，负数=应退税）
+    settlement_amount = annual_tax - prepaid_tax
+    
+    return AnnualSettlementResult(
+        comprehensive_income=comprehensive_income,
+        deductions=total_deductions,
+        taxable_income=taxable_income,
+        tax_rate=tax_rate,
+        quick_deduction=quick_ded,
+        annual_tax=annual_tax,
+        prepaid_tax=prepaid_tax,
+        settlement_amount=settlement_amount,
+    )
+
+
+# ==================== 年终奖智能优化 ====================
+
+def optimize_bonus_allocation(
+    total_bonus: float,
+    monthly_salary: float,
+    social_insurance: float,
+    special_deduction: SpecialDeduction,
+    max_splits: int = 5,
+) -> BonusOptimizationResult:
+    """
+    年终奖智能优化 - 找到最优的年终奖分配方案
+    
+    策略：
+    1. 部分并入当月工资，部分单独计税
+    2. 或分多次发放
+    3. 找到总税额最小的方案
+
+    Args:
+        total_bonus: 年终奖总额
+        monthly_salary: 月工资
+        social_insurance: 月五险一金
+        special_deduction: 专项附加扣除
+        max_splits: 最多分几次发放
+
+    Returns:
+        BonusOptimizationResult: 优化结果
+    """
+    optimal_split = []
+    min_tax = float('inf')
+    max_tax = 0
+    
+    # 方案1：全部单独计税
+    separate = calculate_bonus_separate(total_bonus)
+    if separate.tax < min_tax:
+        min_tax = separate.tax
+        optimal_split = [{"amount": total_bonus, "method": "单独计税", "tax": separate.tax}]
+    max_tax = max(max_tax, separate.tax)
+    
+    # 方案2：全部合并计税
+    combined = calculate_bonus_combined(
+        total_bonus, monthly_salary, social_insurance, special_deduction
+    )
+    if combined.tax < min_tax:
+        min_tax = combined.tax
+        optimal_split = [{"amount": total_bonus, "method": "合并计税", "tax": combined.tax}]
+    max_tax = max(max_tax, combined.tax)
+    
+    # 方案3：部分单独 + 部分合并（按10%递增测试）
+    for split_ratio in range(10, 100, 10):
+        bonus1 = total_bonus * split_ratio / 100
+        bonus2 = total_bonus - bonus1
+        
+        # 第一部分单独计税
+        part1 = calculate_bonus_separate(bonus1)
+        
+        # 第二部分合并计税
+        part2 = calculate_bonus_combined(
+            bonus2, monthly_salary, social_insurance, special_deduction
+        )
+        
+        total_split_tax = part1.tax + part2.tax
+        
+        if total_split_tax < min_tax:
+            min_tax = total_split_tax
+            optimal_split = [
+                {"amount": bonus1, "method": "单独计税", "tax": part1.tax},
+                {"amount": bonus2, "method": "合并计税", "tax": part2.tax},
+            ]
+        
+        max_tax = max(max_tax, total_split_tax)
+    
+    return BonusOptimizationResult(
+        total_bonus=total_bonus,
+        optimal_split=optimal_split,
+        total_tax=min_tax,
+        worst_tax=max_tax,
+        savings=max_tax - min_tax,
+    )
+
+
+# ==================== 跳槽薪资谈判 ====================
+
+def calculate_salary_negotiation(
+    target_net: float,
+    social_insurance: float,
+    special_deduction: SpecialDeduction,
+) -> Dict:
+    """
+    跳槽薪资谈判助手 - 从税后反推税前
+
+    Args:
+        target_net: 目标税后收入
+        social_insurance: 五险一金
+        special_deduction: 专项附加扣除
+
+    Returns:
+        Dict: 谈判建议
+    """
+    gross = reverse_gross_from_net(target_net, social_insurance, special_deduction)
+    
+    result = calculate_monthly_tax(
+        monthly_salary=gross,
+        social_insurance=social_insurance,
+        special_deduction=special_deduction,
+    )
+    
+    # 建议的谈判范围（税前 ± 5%）
+    gross_min = gross * 0.95
+    gross_max = gross * 1.05
+    
+    result_min = calculate_monthly_tax(
+        monthly_salary=gross_min,
+        social_insurance=social_insurance,
+        special_deduction=special_deduction,
+    )
+    
+    result_max = calculate_monthly_tax(
+        monthly_salary=gross_max,
+        social_insurance=social_insurance,
+        special_deduction=special_deduction,
+    )
+    
+    return {
+        "目标税后": target_net,
+        "需要税前": gross,
+        "五险一金": social_insurance,
+        "个税": result.monthly_tax,
+        "税率": f"{result.tax_rate*100:.0f}%",
+        "谈判范围": {
+            "最低": {
+                "税前": gross_min,
+                "税后": result_min.net_income,
+            },
+            "最高": {
+                "税前": gross_max,
+                "税后": result_max.net_income,
+            },
+        },
+        "建议话术": f"考虑到税后到手{target_net:.0f}元，建议谈{gross:.0f}元的税前薪资",
+    }
+
+
+def compare_job_offers(
+    offers: List[Dict],
+    special_deduction: SpecialDeduction = None,
+) -> Dict:
+    """
+    对比多个 Offer
+
+    Args:
+        offers: Offer 列表，每个包含 {name, salary, social_insurance, bonus}
+        special_deduction: 专项附加扣除
+
+    Returns:
+        Dict: 对比结果
+    """
+    if special_deduction is None:
+        special_deduction = SpecialDeduction()
+    
+    results = []
+    
+    for offer in offers:
+        name = offer.get('name', 'Offer')
+        salary = offer.get('salary', 0)
+        social = offer.get('social_insurance', 0)
+        bonus = offer.get('bonus', 0)
+        
+        # 计算月度个税
+        monthly = calculate_monthly_tax(
+            monthly_salary=salary,
+            social_insurance=social,
+            special_deduction=special_deduction,
+        )
+        
+        # 计算年度个税
+        annual = calculate_annual_tax(
+            monthly_salary=salary,
+            social_insurance=social,
+            special_deduction=special_deduction,
+        )
+        
+        # 计算年终奖（默认单独计税）
+        bonus_result = None
+        if bonus > 0:
+            bonus_result = calculate_bonus_separate(bonus)
+        
+        # 年度总到手
+        annual_net = annual[-1].cumulative_tax
+        total_annual_gross = salary * 12 + bonus
+        total_annual_net = salary * 12 - social * 12 - annual_net
+        if bonus_result:
+            total_annual_net += bonus_result.net_bonus
+        
+        results.append({
+            "名称": name,
+            "月薪": salary,
+            "五险一金": social,
+            "月个税": monthly.monthly_tax,
+            "月到手": monthly.net_income,
+            "年终奖": bonus,
+            "年终奖个税": bonus_result.tax if bonus_result else 0,
+            "年终奖到手": bonus_result.net_bonus if bonus_result else 0,
+            "年度总收入": total_annual_gross,
+            "年度总到手": total_annual_net,
+            "年度总个税": annual_net + (bonus_result.tax if bonus_result else 0),
+        })
+    
+    # 按年度总到手排序
+    sorted_results = sorted(results, key=lambda x: x['年度总到手'], reverse=True)
+    
+    # 添加排名
+    for i, r in enumerate(sorted_results):
+        r['排名'] = i + 1
+    
+    return {
+        "对比结果": sorted_results,
+        "推荐选择": sorted_results[0]['名称'] if sorted_results else None,
+        "年度到手差额": sorted_results[0]['年度总到手'] - sorted_results[-1]['年度总到手'] if len(sorted_results) > 1 else 0,
+    }
+
+
 # ==================== 报告生成 ====================
 
 def generate_tax_report(
@@ -511,7 +864,7 @@ def quick_calc(
 if __name__ == "__main__":
     # 测试用例
     print("=" * 60)
-    print("中国个税计算器测试")
+    print("中国个税计算器测试 v1.1.0")
     print("=" * 60)
 
     # 测试1：月度个税
@@ -555,3 +908,66 @@ if __name__ == "__main__":
     )
     print(f"  目标到手: ¥25,000")
     print(f"  需要税前: ¥{gross:,.2f}")
+    
+    # 测试4：年度汇算清缴
+    print("\n测试4：年度汇算清缴")
+    income = IncomeSource(
+        salary=360000,  # 年薪30k*12
+        labor_income=20000,  # 劳务报酬
+        royalty_income=10000,  # 稿酬
+    )
+    settlement = calculate_annual_settlement(
+        income_sources=income,
+        annual_social_insurance=54000,  # 4500*12
+        special_deduction=deduction,
+        prepaid_tax=25000,  # 已预缴
+    )
+    print(f"  综合所得: ¥{settlement.comprehensive_income:,.0f}")
+    print(f"  应纳税额: ¥{settlement.annual_tax:,.0f}")
+    print(f"  已预缴: ¥{settlement.prepaid_tax:,.0f}")
+    print(f"  {settlement.status_text}")
+    
+    # 测试5：年终奖优化
+    print("\n测试5：年终奖智能优化")
+    optimization = optimize_bonus_allocation(
+        total_bonus=100000,
+        monthly_salary=20000,
+        social_insurance=3000,
+        special_deduction=deduction,
+    )
+    print(f"  年终奖总额: ¥{optimization.total_bonus:,.0f}")
+    print(f"  最优方案总税额: ¥{optimization.total_tax:,.0f}")
+    print(f"  最差方案总税额: ¥{optimization.worst_tax:,.0f}")
+    print(f"  节省: ¥{optimization.savings:,.0f}")
+    print(f"  最优分配:")
+    for split in optimization.optimal_split:
+        print(f"    - ¥{split['amount']:,.0f} ({split['method']}, 税额 ¥{split['tax']:,.0f})")
+    
+    # 测试6：跳槽薪资谈判
+    print("\n测试6：跳槽薪资谈判")
+    negotiation = calculate_salary_negotiation(
+        target_net=25000,
+        social_insurance=4000,
+        special_deduction=deduction,
+    )
+    print(f"  目标税后: ¥{negotiation['目标税后']:,.0f}")
+    print(f"  需要税前: ¥{negotiation['需要税前']:,.0f}")
+    print(f"  {negotiation['建议话术']}")
+    
+    # 测试7：Offer对比
+    print("\n测试7：Offer对比")
+    offers = [
+        {"name": "A公司", "salary": 25000, "social_insurance": 4000, "bonus": 50000},
+        {"name": "B公司", "salary": 28000, "social_insurance": 4500, "bonus": 30000},
+        {"name": "C公司", "salary": 22000, "social_insurance": 3500, "bonus": 80000},
+    ]
+    comparison = compare_job_offers(offers, deduction)
+    print(f"  推荐选择: {comparison['推荐选择']}")
+    print(f"  年度到手差额: ¥{comparison['年度到手差额']:,.0f}")
+    print("\n  各Offer详情:")
+    for r in comparison['对比结果']:
+        print(f"    {r['排名']}. {r['名称']}: 月薪¥{r['月薪']:,.0f}, 年度到手¥{r['年度总到手']:,.0f}")
+    
+    print("\n" + "=" * 60)
+    print("所有测试完成！")
+    print("=" * 60)
