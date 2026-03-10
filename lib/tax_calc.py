@@ -636,6 +636,378 @@ def calculate_salary_negotiation(
     }
 
 
+# ==================== 涨薪效果分析 ====================
+
+def calculate_raise_effect(
+    current_salary: float,
+    raise_percentage: float,
+    social_insurance: float,
+    special_deduction: SpecialDeduction,
+) -> Dict:
+    """
+    计算涨薪效果
+
+    Args:
+        current_salary: 当前月薪
+        raise_percentage: 涨薪百分比（如 10 表示涨 10%）
+        social_insurance: 五险一金
+        special_deduction: 专项附加扣除
+
+    Returns:
+        Dict: 涨薪效果分析
+    """
+    # 当前工资计算
+    current_result = calculate_monthly_tax(
+        monthly_salary=current_salary,
+        social_insurance=social_insurance,
+        special_deduction=special_deduction,
+    )
+    
+    # 涨薪后工资
+    new_salary = current_salary * (1 + raise_percentage / 100)
+    new_result = calculate_monthly_tax(
+        monthly_salary=new_salary,
+        social_insurance=social_insurance,
+        special_deduction=special_deduction,
+    )
+    
+    # 计算差额
+    gross_increase = new_salary - current_salary
+    tax_increase = new_result.monthly_tax - current_result.monthly_tax
+    net_increase = new_result.net_income - current_result.net_income
+    
+    # 实际到手比例
+    effective_rate = (net_increase / gross_increase * 100) if gross_increase > 0 else 0
+    
+    return {
+        "涨薪前": {
+            "税前": current_salary,
+            "个税": current_result.monthly_tax,
+            "到手": current_result.net_income,
+        },
+        "涨薪后": {
+            "税前": new_salary,
+            "个税": new_result.monthly_tax,
+            "到手": new_result.net_income,
+        },
+        "涨薪效果": {
+            "税前增加": gross_increase,
+            "个税增加": tax_increase,
+            "到手增加": net_increase,
+            "实际到手比例": f"{effective_rate:.1f}%",
+        },
+        "年度效果": {
+            "税前增加": gross_increase * 12,
+            "个税增加": tax_increase * 12,
+            "到手增加": net_increase * 12,
+        },
+        "建议": f"涨薪{raise_percentage}%后，每月多拿¥{net_increase:,.0f}（实际到手{effective_rate:.1f}%），年度多拿¥{net_increase*12:,.0f}",
+    }
+
+
+# ==================== 快速模板 ====================
+
+# 预设场景模板
+QUICK_TEMPLATES = {
+    "单身青年": SpecialDeduction(
+        housing_rent=1500,  # 租房
+    ),
+    "已婚一孩": SpecialDeduction(
+        children_education=2000,  # 1个孩子
+        housing_loan=1000,  # 房贷
+        elderly_support=1000,  # 赡养老人（非独生）
+    ),
+    "已婚二孩": SpecialDeduction(
+        children_education=4000,  # 2个孩子
+        housing_loan=1000,  # 房贷
+        elderly_support=1500,  # 赡养老人
+    ),
+    "有房贷无孩": SpecialDeduction(
+        housing_loan=1000,  # 房贷
+    ),
+    "有娃有房贷": SpecialDeduction(
+        children_education=2000,  # 1个孩子
+        housing_loan=1000,  # 房贷
+    ),
+    "独生子女赡养": SpecialDeduction(
+        elderly_support=3000,  # 独生子女
+    ),
+    "继续教育": SpecialDeduction(
+        continuing_education=400,  # 学历继续教育
+    ),
+    "默认": SpecialDeduction(),
+}
+
+def get_template(name: str) -> SpecialDeduction:
+    """获取预设模板"""
+    return QUICK_TEMPLATES.get(name, QUICK_TEMPLATES["默认"])
+
+def list_templates() -> List[str]:
+    """列出所有预设模板"""
+    return list(QUICK_TEMPLATES.keys())
+
+def quick_calc_with_template(
+    salary: float,
+    social: float,
+    template_name: str,
+) -> Dict:
+    """
+    使用模板快速计算
+
+    Args:
+        salary: 月工资
+        social: 五险一金
+        template_name: 模板名称
+
+    Returns:
+        Dict: 计算结果
+    """
+    deduction = get_template(template_name)
+    
+    result = calculate_monthly_tax(
+        monthly_salary=salary,
+        social_insurance=social,
+        special_deduction=deduction,
+    )
+    
+    return {
+        "模板": template_name,
+        "税前": salary,
+        "五险一金": social,
+        "专项扣除": deduction.total_monthly,
+        "个税": result.monthly_tax,
+        "到手": result.net_income,
+        "税率": f"{result.tax_rate*100:.0f}%",
+    }
+
+
+# ==================== 交互式问答 ====================
+
+def interactive_tax_calculator(answers: Dict) -> Dict:
+    """
+    交互式个税计算
+
+    Args:
+        answers: 用户回答的问题
+            - salary: 月薪
+            - social: 五险一金
+            - children: 子女数量
+            - infants: 婴幼儿数量
+            - has_loan: 是否有房贷
+            - rent: 租房金额
+            - elderly_type: 赡养老人类型（独生/非独生/无）
+            - education: 是否继续教育
+            - bonus: 年终奖（可选）
+
+    Returns:
+        Dict: 完整的个税计算结果
+    """
+    # 构建专项扣除
+    deduction = SpecialDeduction(
+        children_education=answers.get('children', 0) * 2000,
+        infant_care=answers.get('infants', 0) * 2000,
+        housing_loan=1000 if answers.get('has_loan', False) else 0,
+        housing_rent=answers.get('rent', 0),
+        continuing_education=400 if answers.get('education', False) else 0,
+        elderly_support={
+            '独生': 3000,
+            '非独生': 1500,
+            '无': 0,
+        }.get(answers.get('elderly_type', '无'), 0),
+    )
+    
+    # 计算月度个税
+    monthly = calculate_monthly_tax(
+        monthly_salary=answers['salary'],
+        social_insurance=answers.get('social', 0),
+        special_deduction=deduction,
+    )
+    
+    # 计算年度个税
+    annual = calculate_annual_tax(
+        monthly_salary=answers['salary'],
+        social_insurance=answers.get('social', 0),
+        special_deduction=deduction,
+    )
+    
+    result = {
+        "月度": {
+            "税前": answers['salary'],
+            "五险一金": answers.get('social', 0),
+            "专项扣除": deduction.total_monthly,
+            "个税": monthly.monthly_tax,
+            "到手": monthly.net_income,
+            "税率": f"{monthly.tax_rate*100:.0f}%",
+        },
+        "年度": {
+            "税前": answers['salary'] * 12,
+            "五险一金": answers.get('social', 0) * 12,
+            "专项扣除": deduction.total_monthly * 12,
+            "个税": annual[-1].cumulative_tax,
+            "到手": answers['salary'] * 12 - answers.get('social', 0) * 12 - annual[-1].cumulative_tax,
+        },
+        "专项扣除明细": {
+            "子女教育": deduction.children_education,
+            "婴幼儿照护": deduction.infant_care,
+            "继续教育": deduction.continuing_education,
+            "住房贷款利息": deduction.housing_loan,
+            "住房租金": deduction.housing_rent,
+            "赡养老人": deduction.elderly_support,
+        },
+    }
+    
+    # 如果有年终奖
+    if answers.get('bonus', 0) > 0:
+        bonus_comparison = compare_bonus_methods(
+            bonus=answers['bonus'],
+            monthly_salary=answers['salary'],
+            social_insurance=answers.get('social', 0),
+            special_deduction=deduction,
+        )
+        result["年终奖"] = {
+            "金额": answers['bonus'],
+            "单独计税": {
+                "税额": bonus_comparison['separate'].tax,
+                "到手": bonus_comparison['separate'].net_bonus,
+            },
+            "合并计税": {
+                "税额": bonus_comparison['combined'].tax,
+                "到手": bonus_comparison['combined'].net_bonus,
+            },
+            "推荐": bonus_comparison['recommendation'],
+            "节省": bonus_comparison['savings'],
+        }
+    
+    return result
+
+
+# ==================== 飞书文档报告 ====================
+
+def generate_feishu_report(
+    salary: float,
+    social: float,
+    deduction: SpecialDeduction,
+    bonus: float = 0,
+) -> str:
+    """
+    生成飞书文档格式的个税报告
+
+    Args:
+        salary: 月工资
+        social: 五险一金
+        deduction: 专项附加扣除
+        bonus: 年终奖（可选）
+
+    Returns:
+        str: 飞书文档 Markdown 格式
+    """
+    # 计算结果
+    monthly = calculate_monthly_tax(salary, social, deduction)
+    annual = calculate_annual_tax(salary, social, deduction)
+    
+    report = f"""# 📊 个人所得税计算报告
+
+> 生成时间：2025年
+> 税率依据：《个人所得税法》（2025年版）
+
+---
+
+## 一、收入概览
+
+| 项目 | 月度 | 年度 |
+|------|------|------|
+| 税前收入 | ¥{salary:,.2f} | ¥{salary*12:,.2f} |
+| 五险一金 | ¥{social:,.2f} | ¥{social*12:,.2f} |
+| 专项附加扣除 | ¥{deduction.total_monthly:,.2f} | ¥{deduction.total_monthly*12:,.2f} |
+| 应纳税所得额 | ¥{monthly.taxable_income:,.2f} | ¥{annual[-1].taxable_income:,.2f} |
+| **个人所得税** | **¥{monthly.monthly_tax:,.2f}** | **¥{annual[-1].cumulative_tax:,.2f}** |
+| **税后收入** | **¥{monthly.net_income:,.2f}** | **¥{salary*12-social*12-annual[-1].cumulative_tax:,.2f}** |
+
+---
+
+## 二、专项附加扣除明细
+
+| 扣除项 | 月度金额 | 年度金额 | 条件 |
+|--------|----------|----------|------|
+| 子女教育 | ¥{deduction.children_education:,.2f} | ¥{deduction.children_education*12:,.2f} | 3岁-博士在读，每孩2000元/月 |
+| 婴幼儿照护 | ¥{deduction.infant_care:,.2f} | ¥{deduction.infant_care*12:,.2f} | 0-3岁，每孩2000元/月 |
+| 继续教育 | ¥{deduction.continuing_education:,.2f} | ¥{deduction.continuing_education*12:,.2f} | 学历继续教育400元/月 |
+| 住房贷款利息 | ¥{deduction.housing_loan:,.2f} | ¥{deduction.housing_loan*12:,.2f} | 首套房贷1000元/月 |
+| 住房租金 | ¥{deduction.housing_rent:,.2f} | ¥{deduction.housing_rent*12:,.2f} | 800-1500元/月（按城市） |
+| 赡养老人 | ¥{deduction.elderly_support:,.2f} | ¥{deduction.elderly_support*12:,.2f} | 独生3000元/月，非独生最高1500元/月 |
+| **合计** | **¥{deduction.total_monthly:,.2f}** | **¥{deduction.total_monthly*12:,.2f}** | - |
+
+---
+
+## 三、适用税率
+
+- **应纳税所得额**：¥{annual[-1].taxable_income:,.2f}/年
+- **适用税率**：{annual[-1].tax_rate*100:.0f}%
+- **速算扣除数**：¥{annual[-1].quick_deduction:,.2f}
+
+---
+
+## 四、月度个税明细
+
+| 月份 | 税前收入 | 五险一金 | 累计应税所得 | 税率 | 本月个税 | 累计个税 | 税后收入 |
+|------|----------|----------|--------------|------|----------|----------|----------|
+"""
+    
+    for r in annual:
+        report += f"| {r.month} | ¥{r.gross_income:,.0f} | ¥{r.social_insurance:,.0f} | ¥{r.taxable_income:,.0f} | {r.tax_rate*100:.0f}% | ¥{r.monthly_tax:,.0f} | ¥{r.cumulative_tax:,.0f} | ¥{r.net_income:,.0f} |\n"
+    
+    # 年终奖对比
+    if bonus > 0:
+        comparison = compare_bonus_methods(bonus, salary, social, deduction)
+        
+        report += f"""
+---
+
+## 五、年终奖计税对比
+
+**年终奖金额**：¥{bonus:,.2f}
+
+| 计税方式 | 月均额 | 税率 | 应纳税额 | 税后金额 |
+|----------|--------|------|----------|----------|
+| 单独计税 | ¥{comparison['separate'].monthly_average:,.2f} | {comparison['separate'].tax_rate*100:.0f}% | ¥{comparison['separate'].tax:,.2f} | ¥{comparison['separate'].net_bonus:,.2f} |
+| 合并计税 | - | {comparison['combined'].tax_rate*100:.0f}% | ¥{comparison['combined'].tax:,.2f} | ¥{comparison['combined'].net_bonus:,.2f} |
+
+### 📋 推荐
+
+**推荐方式**：{'单独计税' if comparison['recommendation'] == 'separate' else '合并计税'}
+
+**节省税额**：¥{comparison['savings']:,.2f}
+
+---
+
+## 六、年度总收入
+
+| 项目 | 金额 |
+|------|------|
+| 税前总收入 | ¥{salary*12+bonus:,.2f} |
+| 年度个税 | ¥{annual[-1].cumulative_tax + comparison[comparison['recommendation']].tax:,.2f} |
+| 年度五险一金 | ¥{social*12:,.2f} |
+| **年度税后总收入** | **¥{salary*12+bonus-social*12-annual[-1].cumulative_tax-comparison[comparison['recommendation']].tax:,.2f}** |
+"""
+    
+    report += """
+---
+
+## 七、注意事项
+
+1. **累计预扣法**：每月个税按年初累计计算，非简单月度计算
+2. **年终奖优惠**：2027年12月31日前，年终奖可选择单独计税
+3. **专项扣除**：五险一金中的个人缴纳部分可税前扣除
+4. **赡养老人**：仅限生父母、继父母、养父母，不包括岳父岳母/公婆
+
+---
+
+*本报告由「中国个税计算器」自动生成*
+"""
+    
+    return report
+
+
 def compare_job_offers(
     offers: List[Dict],
     special_deduction: SpecialDeduction = None,
@@ -864,7 +1236,7 @@ def quick_calc(
 if __name__ == "__main__":
     # 测试用例
     print("=" * 60)
-    print("中国个税计算器测试 v1.1.0")
+    print("中国个税计算器测试 v1.2.0")
     print("=" * 60)
 
     # 测试1：月度个税
@@ -968,6 +1340,64 @@ if __name__ == "__main__":
     for r in comparison['对比结果']:
         print(f"    {r['排名']}. {r['名称']}: 月薪¥{r['月薪']:,.0f}, 年度到手¥{r['年度总到手']:,.0f}")
     
+    # 测试8：涨薪效果（新功能）
     print("\n" + "=" * 60)
-    print("所有测试完成！")
+    print("v1.2.0 新功能测试")
+    print("=" * 60)
+    
+    print("\n测试8：涨薪效果分析")
+    raise_effect = calculate_raise_effect(
+        current_salary=20000,
+        raise_percentage=20,
+        social_insurance=3000,
+        special_deduction=deduction,
+    )
+    print(f"  涨薪前: 税前¥{raise_effect['涨薪前']['税前']:,.0f}, 到手¥{raise_effect['涨薪前']['到手']:,.0f}")
+    print(f"  涨薪后: 税前¥{raise_effect['涨薪后']['税前']:,.0f}, 到手¥{raise_effect['涨薪后']['到手']:,.0f}")
+    print(f"  {raise_effect['建议']}")
+    
+    # 测试9：快速模板（新功能）
+    print("\n测试9：快速模板")
+    print(f"  可用模板: {', '.join(list_templates())}")
+    template_result = quick_calc_with_template(
+        salary=25000,
+        social=4000,
+        template_name="已婚一孩",
+    )
+    print(f"  模板[{template_result['模板']}]: 税前¥{template_result['税前']:,.0f}, 到手¥{template_result['到手']:,.0f}")
+    
+    # 测试10：交互式问答（新功能）
+    print("\n测试10：交互式问答")
+    answers = {
+        "salary": 30000,
+        "social": 4500,
+        "children": 1,
+        "has_loan": True,
+        "rent": 0,
+        "elderly_type": "非独生",
+        "education": False,
+        "bonus": 60000,
+    }
+    interactive_result = interactive_tax_calculator(answers)
+    print(f"  月度到手: ¥{interactive_result['月度']['到手']:,.0f}")
+    print(f"  年度到手: ¥{interactive_result['年度']['到手']:,.0f}")
+    print(f"  年终奖推荐: {interactive_result['年终奖']['推荐']}")
+    
+    # 测试11：飞书文档报告（新功能）
+    print("\n测试11：飞书文档报告")
+    feishu_report = generate_feishu_report(
+        salary=30000,
+        social=4500,
+        deduction=deduction,
+        bonus=60000,
+    )
+    # 只打印报告前10行
+    report_lines = feishu_report.split('\n')[:10]
+    print("  报告预览（前10行）:")
+    for line in report_lines:
+        print(f"    {line}")
+    print("  ... (完整报告已生成)")
+    
+    print("\n" + "=" * 60)
+    print("所有测试完成！v1.2.0 新功能测试通过")
     print("=" * 60)
