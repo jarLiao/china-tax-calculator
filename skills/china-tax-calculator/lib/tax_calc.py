@@ -1751,6 +1751,435 @@ def quick_calc(
     }
 
 
+# ==================== v2.0.0 新功能 ====================
+
+# 历史税率表（用于对比）
+HISTORICAL_TAX_BRACKETS = {
+    2018: [  # 2018年10月前（旧税法）
+        (1500, 0.03, 0),
+        (4500, 0.10, 105),
+        (9000, 0.20, 555),
+        (35000, 0.25, 1005),
+        (55000, 0.30, 2755),
+        (80000, 0.35, 5505),
+        (float('inf'), 0.45, 13505),
+    ],
+    2019: MONTHLY_TAX_BRACKETS,  # 2019年起实施新税法
+    2020: MONTHLY_TAX_BRACKETS,
+    2021: MONTHLY_TAX_BRACKETS,
+    2022: MONTHLY_TAX_BRACKETS,
+    2023: MONTHLY_TAX_BRACKETS,
+    2024: MONTHLY_TAX_BRACKETS,
+    2025: MONTHLY_TAX_BRACKETS,
+}
+
+# 历史起征点
+HISTORICAL_THRESHOLD = {
+    2018: 3500,  # 2018年10月前
+    2019: 5000,  # 2018年10月起
+    2020: 5000,
+    2021: 5000,
+    2022: 5000,
+    2023: 5000,
+    2024: 5000,
+    2025: 5000,
+}
+
+
+def calculate_historical_tax(
+    salary: float,
+    year: int,
+    social_insurance: float,
+) -> Dict:
+    """
+    计算历史税率下的个税
+
+    Args:
+        salary: 月薪
+        year: 年份
+        social_insurance: 五险一金
+
+    Returns:
+        Dict: 历史个税计算结果
+    """
+    brackets = HISTORICAL_TAX_BRACKETS.get(year, MONTHLY_TAX_BRACKETS)
+    threshold = HISTORICAL_THRESHOLD.get(year, 5000)
+
+    # 应纳税所得额
+    taxable = max(0, salary - social_insurance - threshold)
+
+    # 计算税额
+    tax = 0
+    for limit, rate, deduction in brackets:
+        if taxable <= limit:
+            tax = taxable * rate - deduction
+            break
+
+    tax = max(0, tax)
+
+    return {
+        "年份": year,
+        "税前": salary,
+        "五险一金": social_insurance,
+        "起征点": threshold,
+        "应纳税所得额": taxable,
+        "个税": tax,
+        "到手": salary - social_insurance - tax,
+    }
+
+
+def compare_historical_tax(
+    salary: float,
+    social_insurance: float,
+    years: List[int] = None,
+) -> Dict:
+    """
+    对比历史税率
+
+    Args:
+        salary: 月薪
+        social_insurance: 五险一金
+        years: 对比年份列表
+
+    Returns:
+        Dict: 历史税率对比结果
+    """
+    if years is None:
+        years = [2018, 2019, 2025]
+
+    results = []
+    for year in years:
+        result = calculate_historical_tax(salary, year, social_insurance)
+        results.append(result)
+
+    # 找出最优年份
+    best_year = min(results, key=lambda x: x["个税"])
+
+    return {
+        "对比结果": results,
+        "最优年份": best_year["年份"],
+        "节省个税": max(r["个税"] for r in results) - best_year["个税"],
+        "建议": f"对比{years}，{best_year['年份']}年税负最低，每月节省¥{max(r['个税'] for r in results) - best_year['个税']:,.0f}",
+    }
+
+
+def find_bonus_trap_points() -> List[Dict]:
+    """
+    找出年终奖临界点（多发1块钱，少拿几千块的陷阱）
+
+    Returns:
+        List[Dict]: 临界点列表
+    """
+    # 年终奖税率临界点
+    trap_points = [
+        {"金额": 36000, "陷阱": 36001, "说明": "多发1元，多缴税¥2300"},
+        {"金额": 144000, "陷阱": 144001, "说明": "多发1元，多缴税¥13000"},
+        {"金额": 300000, "陷阱": 300001, "说明": "多发1元，多缴税¥13750"},
+        {"金额": 420000, "陷阱": 420001, "说明": "多发1元，多缴税¥13600"},
+        {"金额": 660000, "陷阱": 660001, "说明": "多发1元，多缴税¥13000"},
+        {"金额": 960000, "陷阱": 960001, "说明": "多发1元，多缴税¥12800"},
+    ]
+
+    return trap_points
+
+
+def check_bonus_trap(bonus: float) -> Dict:
+    """
+    检查年终奖是否在陷阱区间
+
+    Args:
+        bonus: 年终奖金额
+
+    Returns:
+        Dict: 检查结果
+    """
+    trap_points = find_bonus_trap_points()
+
+    for trap in trap_points:
+        # 检查是否在陷阱区间内（临界点+1000元内）
+        if trap["金额"] < bonus < trap["金额"] + 1000:
+            return {
+                "状态": "⚠️ 警告",
+                "问题": f"年终奖¥{bonus:,.0f}在陷阱区间",
+                "建议": f"建议调整为¥{trap['金额']:,.0f}（多发1块钱会少拿几千）",
+                "陷阱说明": trap["说明"],
+            }
+
+    return {
+        "状态": "✅ 安全",
+        "问题": "年终奖不在陷阱区间",
+        "建议": "当前金额安全",
+    }
+
+
+def optimize_bonus_avoiding_traps(
+    target_bonus: float,
+    monthly_salary: float,
+    social_insurance: float,
+    special_deduction: SpecialDeduction,
+) -> Dict:
+    """
+    优化年终奖避免陷阱（找到最近的安全金额）
+
+    Args:
+        target_bonus: 目标年终奖
+        monthly_salary: 月薪
+        social_insurance: 五险一金
+        special_deduction: 专项附加扣除
+
+    Returns:
+        Dict: 优化结果
+    """
+    trap_points = find_bonus_trap_points()
+
+    # 找到最近的安全金额
+    safe_amounts = []
+    for i, trap in enumerate(trap_points):
+        # 临界点前1000元
+        safe_amounts.append(trap["金额"] - 1000)
+        # 临界点后10000元
+        if i < len(trap_points) - 1:
+            safe_amounts.append(trap["金额"] + 10000)
+
+    # 找到最接近目标的安全金额
+    best_amount = min(
+        [a for a in safe_amounts if a > 0],
+        key=lambda x: abs(x - target_bonus),
+    )
+
+    # 计算两个金额的税额
+    target_comparison = compare_bonus_methods(
+        target_bonus, monthly_salary, social_insurance, special_deduction
+    )
+    best_comparison = compare_bonus_methods(
+        best_amount, monthly_salary, social_insurance, special_deduction
+    )
+
+    target_tax = target_comparison['separate'].tax
+    best_tax = best_comparison['separate'].tax
+
+    return {
+        "目标金额": target_bonus,
+        "推荐金额": best_amount,
+        "目标税额": target_tax,
+        "推荐税额": best_tax,
+        "节省税额": target_tax - best_tax,
+        "金额差异": abs(best_amount - target_bonus),
+        "建议": f"建议调整为¥{best_amount:,.0f}，节省税额¥{target_tax - best_tax:,.0f}",
+    }
+
+
+def batch_calculate_tax(
+    employees: List[Dict],
+    special_deduction: SpecialDeduction,
+) -> Dict:
+    """
+    批量计算员工个税（HR 模式）
+
+    Args:
+        employees: 员工列表，每个员工包含 {name, salary, social_insurance, bonus}
+        special_deduction: 专项附加扣除
+
+    Returns:
+        Dict: 批量计算结果
+    """
+    results = []
+    total_gross = 0
+    total_tax = 0
+    total_net = 0
+
+    for emp in employees:
+        # 计算月度个税
+        monthly = calculate_monthly_tax(
+            emp["salary"],
+            emp.get("social_insurance", 0),
+            special_deduction,
+        )
+
+        # 计算年终奖（如果有）
+        bonus_tax = 0
+        bonus_net = 0
+        if emp.get("bonus", 0) > 0:
+            comparison = compare_bonus_methods(
+                emp["bonus"],
+                emp["salary"],
+                emp.get("social_insurance", 0),
+                special_deduction,
+            )
+            bonus_tax = comparison[comparison["recommendation"]].tax
+            bonus_net = comparison[comparison["recommendation"]].net_bonus
+
+        # 年度总计
+        annual_gross = emp["salary"] * 12 + emp.get("bonus", 0)
+        annual_tax = monthly.monthly_tax * 12 + bonus_tax
+        annual_net = monthly.net_income * 12 + bonus_net
+
+        results.append(
+            {
+                "姓名": emp["name"],
+                "月薪": emp["salary"],
+                "年终奖": emp.get("bonus", 0),
+                "年度税前": annual_gross,
+                "年度个税": annual_tax,
+                "年度到手": annual_net,
+                "月度个税": monthly.monthly_tax,
+                "月度到手": monthly.net_income,
+            }
+        )
+
+        total_gross += annual_gross
+        total_tax += annual_tax
+        total_net += annual_net
+
+    return {
+        "员工数量": len(employees),
+        "年度税前总计": total_gross,
+        "年度个税总计": total_tax,
+        "年度到手总计": total_net,
+        "人均个税": total_tax / len(employees) if employees else 0,
+        "人均到手": total_net / len(employees) if employees else 0,
+        "员工明细": results,
+    }
+
+
+def generate_tax_optimization_advice(
+    salary: float,
+    social_insurance: float,
+    special_deduction: SpecialDeduction,
+    bonus: float = 0,
+) -> Dict:
+    """
+    生成税负优化建议（智能推荐）
+
+    Args:
+        salary: 月薪
+        social_insurance: 五险一金
+        special_deduction: 专项附加扣除
+        bonus: 年终奖
+
+    Returns:
+        Dict: 优化建议
+    """
+    advices = []
+
+    # 1. 检查专项扣除是否用足
+    available_deductions = {
+        "子女教育": 2000,
+        "婴幼儿照护": 2000,
+        "继续教育": 400,
+        "住房贷款利息": 1000,
+        "住房租金": 1500,
+        "赡养老人": 3000,
+    }
+
+    unused = []
+    for name, amount in available_deductions.items():
+        if getattr(special_deduction, name.replace("子女教育", "children_education")
+                                          .replace("婴幼儿照护", "infant_care")
+                                          .replace("继续教育", "continuing_education")
+                                          .replace("住房贷款利息", "housing_loan")
+                                          .replace("住房租金", "housing_rent")
+                                          .replace("赡养老人", "elderly_support"), 0) == 0:
+            unused.append(name)
+
+    if unused:
+        advices.append(
+            {
+                "类型": "专项扣除",
+                "建议": f"未使用的扣除项：{', '.join(unused)}",
+                "潜在节省": f"每月最多可节省¥{sum(available_deductions.values()) * 0.2:,.0f}个税",
+            }
+        )
+
+    # 2. 检查年终奖陷阱
+    if bonus > 0:
+        trap_check = check_bonus_trap(bonus)
+        if "⚠️" in trap_check["状态"]:
+            advices.append(
+                {
+                    "类型": "年终奖陷阱",
+                    "建议": trap_check["建议"],
+                    "潜在节省": "数千元",
+                }
+            )
+
+    # 3. 年终奖计税方式
+    if bonus > 0:
+        comparison = compare_bonus_methods(
+            bonus, salary, social_insurance, special_deduction
+        )
+        if comparison["savings"] > 0:
+            advices.append(
+                {
+                    "类型": "年终奖计税",
+                    "建议": f"建议使用{'单独' if comparison['recommendation'] == 'separate' else '合并'}计税",
+                    "节省金额": f"¥{comparison['savings']:,.0f}",
+                }
+            )
+
+    # 4. 社保公积金基数优化
+    if social_insurance < salary * 0.2:
+        advices.append(
+            {
+                "类型": "社保公积金",
+                "建议": "当前五险一金较低，可考虑提高缴费基数",
+                "潜在收益": "退休金增加 + 医保账户增加",
+            }
+        )
+
+    # 5. 年度汇算清缴提醒
+    advices.append(
+        {
+            "类型": "年度汇算",
+            "建议": "每年3-6月进行年度汇算清缴，可能退税",
+            "注意事项": "劳务报酬、稿酬等需要汇总计税",
+        }
+    )
+
+    return {
+        "优化建议": advices,
+        "总结": f"共{len(advices)}条建议，可有效降低税负",
+    }
+
+
+def generate_batch_excel_data(
+    employees: List[Dict],
+    special_deduction: SpecialDeduction,
+) -> str:
+    """
+    生成批量计算 Excel 数据（CSV 格式）
+
+    Args:
+        employees: 员工列表
+        special_deduction: 专项附加扣除
+
+    Returns:
+        str: CSV 格式数据
+    """
+    batch_result = batch_calculate_tax(employees, special_deduction)
+
+    # CSV 头
+    csv = "姓名,月薪,年终奖,年度税前,月度个税,月度到手,年度个税,年度到手\n"
+
+    # CSV 数据
+    for emp in batch_result["员工明细"]:
+        csv += f"{emp['姓名']},{emp['月薪']:.2f},{emp['年终奖']:.2f},"
+        csv += f"{emp['年度税前']:.2f},{emp['月度个税']:.2f},"
+        csv += f"{emp['月度到手']:.2f},{emp['年度个税']:.2f},"
+        csv += f"{emp['年度到手']:.2f}\n"
+
+    # 汇总
+    csv += "\n汇总\n"
+    csv += f"员工数量,{batch_result['员工数量']}\n"
+    csv += f"年度税前总计,{batch_result['年度税前总计']:.2f}\n"
+    csv += f"年度个税总计,{batch_result['年度个税总计']:.2f}\n"
+    csv += f"年度到手总计,{batch_result['年度到手总计']:.2f}\n"
+    csv += f"人均个税,{batch_result['人均个税']:.2f}\n"
+    csv += f"人均到手,{batch_result['人均到手']:.2f}\n"
+
+    return csv
+
+
 if __name__ == "__main__":
     # 测试用例
     print("=" * 60)
@@ -1943,6 +2372,54 @@ if __name__ == "__main__":
     print("  Excel 数据已生成（CSV 格式）")
     print(f"  数据行数: {len(excel_data.split(chr(10)))} 行")
     
+    # v2.0.0 新功能测试
     print("\n" + "=" * 60)
-    print("所有测试完成！v1.3.0 新功能测试通过")
+    print("v2.0.0 新功能测试")
+    print("=" * 60)
+    
+    print("\n测试16：历史税率对比")
+    historical = compare_historical_tax(30000, 4500, [2018, 2019, 2025])
+    print(f"  {historical['建议']}")
+    print(f"  2018年个税: ¥{historical['对比结果'][0]['个税']:,.0f}")
+    print(f"  2019年个税: ¥{historical['对比结果'][1]['个税']:,.0f}")
+    print(f"  2025年个税: ¥{historical['对比结果'][2]['个税']:,.0f}")
+    
+    print("\n测试17：年终奖陷阱检查")
+    trap = check_bonus_trap(36001)
+    print(f"  年终奖36,001元:")
+    print(f"    {trap['状态']}: {trap['问题']}")
+    print(f"    {trap['建议']}")
+    
+    trap_safe = check_bonus_trap(36000)
+    print(f"  年终奖36,000元:")
+    print(f"    {trap_safe['状态']}: {trap_safe['建议']}")
+    
+    print("\n测试18：年终奖陷阱优化")
+    optimization = optimize_bonus_avoiding_traps(36001, 20000, 3000, deduction)
+    print(f"  目标: ¥{optimization['目标金额']:,.0f}")
+    print(f"  推荐: ¥{optimization['推荐金额']:,.0f}")
+    print(f"  {optimization['建议']}")
+    
+    print("\n测试19：批量计算（HR模式）")
+    employees = [
+        {"name": "张三", "salary": 30000, "social_insurance": 4500, "bonus": 60000},
+        {"name": "李四", "salary": 25000, "social_insurance": 4000, "bonus": 50000},
+        {"name": "王五", "salary": 20000, "social_insurance": 3000, "bonus": 30000},
+    ]
+    batch = batch_calculate_tax(employees, deduction)
+    print(f"  员工数量: {batch['员工数量']}")
+    print(f"  年度税前总计: ¥{batch['年度税前总计']:,.0f}")
+    print(f"  年度个税总计: ¥{batch['年度个税总计']:,.0f}")
+    print(f"  年度到手总计: ¥{batch['年度到手总计']:,.0f}")
+    print(f"  人均个税: ¥{batch['人均个税']:,.0f}")
+    print(f"  人均到手: ¥{batch['人均到手']:,.0f}")
+    
+    print("\n测试20：税负优化建议")
+    advice = generate_tax_optimization_advice(30000, 4500, deduction, 36001)
+    print(f"  {advice['总结']}")
+    for i, a in enumerate(advice['优化建议'][:3], 1):
+        print(f"  {i}. [{a['类型']}] {a['建议']}")
+    
+    print("\n" + "=" * 60)
+    print("所有测试完成！v2.0.0 新功能测试通过")
     print("=" * 60)

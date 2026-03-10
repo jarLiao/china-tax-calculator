@@ -1,6 +1,6 @@
 {
   "name": "china-tax-calculator",
-  "version": "1.3.0",
+  "version": "2.0.0",
   "description": "中国个人所得税计算器，支持月度工资、年终奖、专项附加扣除、年度汇算清缴、多收入来源计算",
   "author": "openclaw",
   "license": "MIT",
@@ -19,7 +19,11 @@
     "飞书报告",
     "社保公积金",
     "可视化图表",
-    "Excel导出"
+    "Excel导出",
+    "年终奖陷阱",
+    "批量计算",
+    "税负优化",
+    "历史税率"
   ],
   "categories": ["finance", "calculator"],
   "repository": "https://github.com/openclaw/china-tax-calculator",
@@ -45,6 +49,10 @@
     "可视化图表（v1.3.0新增）",
     "年终奖规划（v1.3.0新增）",
     "Excel导出（v1.3.0新增）",
+    "年终奖陷阱预警（v2.0.0新增）",
+    "税负优化建议引擎（v2.0.0新增）",
+    "批量计算模式（v2.0.0新增）",
+    "历史税率对比（v2.0.0新增）",
     "个税报告生成"
   ],
   "taxYear": 2025,
